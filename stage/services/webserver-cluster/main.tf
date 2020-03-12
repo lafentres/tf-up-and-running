@@ -1,3 +1,34 @@
+terraform {
+  backend "s3" {
+    bucket = "krista-terraform-up-and-running-state"
+    key    = "stage/services/webserver-cluster/terraform.tfstate"
+    region = "us-east-2"
+
+    dynamodb_table = "terraform-up-and-running-locks"
+    encrypt        = true
+  }
+}
+
+data "terraform_remote_state" "db" {
+  backend = "s3"
+
+  config = {
+    bucket = "krista-terraform-up-and-running-state"
+    key    = "stage/data-stores/mysql/terraform.tfstate"
+    region = "us-east-2"
+  }
+}
+
+data "template_file" "user_data" {
+  template = file("user-data.sh")
+
+  vars = {
+    server_port = var.server_port
+    db_address  = data.terraform_remote_state.db.outputs.address
+    db_port     = data.terraform_remote_state.db.outputs.port
+  }
+}
+
 provider "aws" {
   region = "us-east-2"
 }
@@ -13,30 +44,12 @@ resource "aws_security_group" "instance" {
   }
 }
 
-variable "server_port" {
-  description = "The port the server will use for HTTP requests"
-  type        = number
-  default     = 8080
-}
-
 resource "aws_launch_configuration" "example" {
   image_id        = "ami-0c55b159cbfafe1f0"
   instance_type   = "t2.micro"
   security_groups = [aws_security_group.instance.id]
 
-  user_data = <<-EOF
-              #!/bin/bash
-              echo "<html>" > index.html
-              echo "<head>" >> index.html
-              echo "<title>AHHHH!</title>" >> index.html
-              echo "</head>" >> index.html
-              echo "<body style='background-color:#623CE4;'>" >> index.html
-              echo "<h1 style='text-align:center;'>AHHHHHHHHHH</h1>" >> index.html
-              echo "<iframe width='560' height='315' src='https://www.youtube.com/embed/pF51RwYbKUI' frameborder='0' allow='accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture' allowfullscreen style='display:block;margin:0 auto;'></iframe>" >> index.html
-              echo "</body>" >> index.html
-              echo "</html>" >> index.html
-              nohup busybox httpd -f -p ${var.server_port} &
-              EOF
+  user_data = data.template_file.user_data.rendered
 
   # Required when using a launch configuration with an auto scaling group.
   # https://www.terraform.io/docs/providers/aws/r/launch_configuration.html
@@ -145,9 +158,4 @@ resource "aws_lb_listener_rule" "asg" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.asg.arn
   }
-}
-
-output "alb_dns_name" {
-  value       = aws_lb.example.dns_name
-  description = "The domain name of the load balancer"
 }
